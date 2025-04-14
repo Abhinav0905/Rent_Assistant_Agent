@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.env_sh
+venv/
+.venv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Unit test / coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+db/
+*.db
+*.sqlite3
+*.log
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+.env_sh
+.env
+
+ipynb_checkpoints/
+# Jupyter Notebook
+.ipynb_checkpoints
+# pyenv
+.python-version
+# mypy
