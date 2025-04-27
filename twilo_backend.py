@@ -9,6 +9,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from query_engine import query_agreement
+from query_detection import QueryDetection
 import uvicorn
 import time
 
@@ -47,8 +48,9 @@ validator = RequestValidator(auth_token)
 
 # Whitelist of approved phone numbers (your society members)
 # Read from environment variable if available, otherwise use default
-APPROVED_NUMBERS_STR = os.environ.get("APPROVED_WHATSAPP_NUMBERS", "+1 510 954 9624")
-APPROVED_NUMBERS = [number.strip() for number in APPROVED_NUMBERS_STR.split(",")]
+# APPROVED_NUMBERS_STR = os.environ.get("APPROVED_WHATSAPP_NUMBERS", "+1 510 954 9624")
+# APPROVED_NUMBERS = [number.strip() for number in APPROVED_NUMBERS_STR.split(",")]
+
 
 def normalize_phone_number(phone: str) -> str:
     """Normalize phone number to a standard format by removing spaces and prefixes"""
@@ -92,7 +94,7 @@ def check_rate_limit(phone_number: str):
             del RATE_LIMIT[num]
     
     if phone_number not in RATE_LIMIT:
-        RATE_LIMIT[phone_number] = {"count": 10, "timestamp": current_time}
+        RATE_LIMIT[phone_number] = {"count": 100, "timestamp": current_time}
         return
     
     if RATE_LIMIT[phone_number]["count"] >= MAX_REQUESTS:
@@ -108,10 +110,10 @@ async def health_check():
     return {"status": "healthy", "service": "rental-agreement-assistant"}
 
 
-@app.get("/approved-numbers")
-async def get_approved_numbers():
-    """Return list of approved phone numbers (only for debugging)"""
-    return {"approved_numbers": APPROVED_NUMBERS}
+# @app.get("/approved-numbers")
+# async def get_approved_numbers():
+#     """Return list of approved phone numbers (only for debugging)"""
+#     return {"approved_numbers": APPROVED_NUMBERS}
 
 
 @app.middleware("http")
@@ -158,29 +160,33 @@ async def root_webhook(request: Request) -> PlainTextResponse:
         # Note: Authorization check removed for testing
         normalized_from = normalize_phone_number(from_number) if from_number else ""
         logger.info(f"Normalized from: '{normalized_from}'")
-        logger.info(f"Proceeding without authorization check")
+        logger.info("Proceeding without authorization check")
             
         # Process the query
         try:
-            # Pass the user's question to the query_agreement function
-            result = await query_agreement(message_body)
+            # Use the class method correctly
+            result = await QueryDetection.query(message_body)
             
-            if isinstance(result, dict):
+            # Ensure we have a string response
+            if isinstance(result, str):
+                response_text = result
+            elif isinstance(result, dict):
                 if 'error' in result:
                     logger.error(f"Query engine error: {result['error']}")
                     response_text = "Sorry, I encountered an error while processing your query."
                 elif 'answer' in result:
                     response_text = result['answer']
-                    logger.info(f"Response generated: {response_text}...")
                 else:
                     logger.error(f"Invalid response format: {result}")
                     response_text = "Sorry, I couldn't process your query. Please try again."
             else:
-                logger.error(f"Invalid response type: {result}")
+                logger.error(f"Unexpected response type: {type(result)}")
                 response_text = "Sorry, I couldn't process your query. Please try again."
+            
+            logger.info(f"Response generated: {response_text[:100]}...")
                 
         except Exception as e:
-            logger.error(f"Error processing query: {str(e)}")
+            logger.error(f"Error processing query: {str(e)}", exc_info=True)  # Add full stack trace
             response_text = "Sorry, I encountered an error while processing your request."
             
         # Make sure the phone number is valid - more robust check
@@ -214,5 +220,5 @@ async def root_webhook(request: Request) -> PlainTextResponse:
 
 
 if __name__ == "__main__":
-    logger.info("Starting Rental Agreement Assistant Server")
+    logger.info("Starting Rental Agreement Assistant Server...")   
     uvicorn.run("twilo_backend:app", host="0.0.0.0", port=8080, reload=True)
