@@ -212,7 +212,7 @@ async def root_webhook(request: Request) -> PlainTextResponse:
             to=whatsapp_to
         )
         
-        logger.info(f"Message sent with SID: {message.sid}")
+        logger.info(f"Message sent with SID: {message.body}")
         return PlainTextResponse(message.body)
     except Exception as e:
         logger.error(f"Root webhook error: {str(e)}", exc_info=True)  # Include full stack trace
