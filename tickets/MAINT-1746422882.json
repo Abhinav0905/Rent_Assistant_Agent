@@ -1,0 +1,19 @@
+{
+  "description": "Location: Main entrance\nReported Issue: Lock not functioning properly",
+  "tenant_phone": "+16506954346",
+  "category": "locksmith",
+  "priority": "high",
+  "tenant_name": null,
+  "apartment_number": "",
+  "requested_date": null,
+  "access_instructions": "",
+  "has_images": false,
+  "ticket_id": "MAINT-1746422882",
+  "status": "new",
+  "created_at": "2025-05-04 22:28:02.980455",
+  "updated_at": "2025-05-04 22:28:02.980461",
+  "assigned_to": null,
+  "estimated_completion": null,
+  "image_paths": [],
+  "notes": []
+}
