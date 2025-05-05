@@ -1,0 +1,19 @@
+{
+  "description": "Location: Bathroom\nReported Issue: Shower not working",
+  "tenant_phone": "+16506954346",
+  "category": "plumbing",
+  "priority": "high",
+  "tenant_name": null,
+  "apartment_number": "",
+  "requested_date": null,
+  "access_instructions": "",
+  "has_images": false,
+  "ticket_id": "MAINT-1746417467",
+  "status": "new",
+  "created_at": "2025-05-04 20:57:47.445242",
+  "updated_at": "2025-05-04 20:57:47.445246",
+  "assigned_to": null,
+  "estimated_completion": null,
+  "image_paths": [],
+  "notes": []
+}

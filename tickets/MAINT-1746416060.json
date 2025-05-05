@@ -1,0 +1,19 @@
+{
+  "description": "Raise a maintenance ticket for the shower not working",
+  "tenant_phone": "+16506954346",
+  "category": "plumbing",
+  "priority": "high",
+  "tenant_name": null,
+  "apartment_number": "",
+  "requested_date": null,
+  "access_instructions": "",
+  "has_images": false,
+  "ticket_id": "MAINT-1746416060",
+  "status": "new",
+  "created_at": "2025-05-04 20:34:20.125490",
+  "updated_at": "2025-05-04 20:34:20.125495",
+  "assigned_to": null,
+  "estimated_completion": null,
+  "image_paths": [],
+  "notes": []
+}

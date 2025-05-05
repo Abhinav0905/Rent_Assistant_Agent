@@ -2,9 +2,18 @@ from agents import Agent, Runner
 from fastapi import logger
 from langdetect import detect
 from query_engine import query_agreement
+from openai import OpenAI
+import json
+from models import TicketCategory, TicketPriority
 
+client = OpenAI()
 
 class QueryDetection():
+
+    QUESTION = "question"
+    MAINTENANCE = "maintenance"
+    STATUS = "status_check"
+    OTHER = "other"
 
     # Configure translation agents
     spanish_agent = Agent(
@@ -170,23 +179,28 @@ class QueryDetection():
     
     @classmethod
     async def query(cls, question):
-        """Query the rental agreement with a question"""
+        """Process a query from the user"""
         try:
-            # Detect the language
+            # Detect language
             source_lang = await cls.detect_language(question)
-            print("Detected language:", source_lang)
+            print(f"Detected language: {source_lang}")
+
+            # First detect intent
+            intent_result = await cls.detect_message_intent(question)
+            intent = intent_result.get("intent", "question")
+            print(f"Detected intent: {intent}")
+
+            # Handle based on intent
+            if intent == "maintenance":
+                # For maintenance requests, return the full result without modification
+                return intent_result
             
-            # Translate to English if needed
+            # For regular questions, proceed with normal flow
             english_question = question
             if source_lang != "en":
-                print(f"Translating from {source_lang} to English")
                 english_question = await cls.translate_to_english(question, source_lang)
-                print(f"Translated question: {english_question}")
             
-            # Search documents
-            print(f"Searching with question: {english_question}")
             response = await cls.search_local_documents(english_question)
-            print(f"Response from query engine: {response[:100] if response else 'None'}")
             
             # Make sure response is a string
             if not isinstance(response, str):
@@ -199,17 +213,103 @@ class QueryDetection():
                 else:
                     response = str(response)
             
-            # Synthesize response (optional)
-            response = await cls.synthesize_response(response)
-            print(f"Synthesized response: {response[:100] if response else 'None'}")
-            
-            # Translate back if needed
             if source_lang != "en":
-                print(f"Translating response to {source_lang}")
                 response = await cls.translate_response(response, source_lang)
-                print(f"Final translated response: {response[:100] if response else 'None'}")
                 
             return response
         except Exception as e:
             print(f"Error in query processing: {e}")
             return f"Sorry, I encountered an error processing your query: {str(e)}"
+        
+    @classmethod
+    async def detect_message_intent(cls, message: str) -> dict:
+        """
+        Determine if the message is a question about the lease or a maintenance request
+        
+        Returns:
+            dict with keys: 
+                - intent (MessageIntent)
+                - confidence (float)
+                - ticket_data (dict, only for maintenance requests)
+        """
+        # client = OpenAI()
+        
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4-turbo",
+                messages=[
+                    {"role": "system", "content": 
+                        """Analyze the maintenance request and extract detailed information in this format:
+                        
+                        1. Is this message:
+                           - A maintenance request/issue that needs repair
+                           - A question about rental agreement/lease terms
+                           - A status check request
+                           - Something else
+                        
+                        2. For maintenance requests, analyze and extract:
+                           - What is the specific issue (detailed description)
+                           - What fixtures/appliances are involved
+                           - Location in the apartment
+                           - Signs or symptoms of the problem
+                           - How urgent is it (emergency/high/normal/low)
+                           - Category: plumbing, electrical, hvac, appliance, structural, pest, locksmith, cleaning, other
+                        
+                        Return a JSON object:
+                        {
+                            "intent": "maintenance"|"question"|"status_check"|"other",
+                            "confidence": 0.0-1.0,
+                            "ticket_data": {
+                                "description": "Detailed analysis of the issue",
+                                "location": "Specific location in unit",
+                                "symptoms": "Observable problems",
+                                "category": "Category from list above",
+                                "priority": "emergency|high|normal|low",
+                                "apartment_number": "Unit number if mentioned",
+                                "access_instructions": "Any access details provided"
+                            }
+                        }"""
+                    },
+                    {"role": "user", "content": message}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # For maintenance requests, format a proper description
+            if result["intent"] == "maintenance" and "ticket_data" in result:
+                ticket_data = result["ticket_data"]
+                
+                # Create a detailed description
+                description_parts = []
+                if ticket_data.get("location"):
+                    description_parts.append(f"Location: {ticket_data['location']}")
+                if ticket_data.get("symptoms"):
+                    description_parts.append(f"Issue: {ticket_data['symptoms']}")
+                
+                # Update the description to be more detailed
+                ticket_data["description"] = "\n".join(description_parts) or message
+                
+                # Validate category and priority
+                try:
+                    ticket_data["category"] = TicketCategory(ticket_data.get("category", "other").lower())
+                except ValueError:
+                    ticket_data["category"] = TicketCategory.OTHER
+                
+                try:
+                    ticket_data["priority"] = TicketPriority(ticket_data.get("priority", "normal").lower())
+                except ValueError:
+                    ticket_data["priority"] = TicketPriority.NORMAL
+                
+                result["ticket_data"] = ticket_data
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error in intent detection: {e}")
+            return {
+                "intent": "question",
+                "confidence": 0.5,
+            }

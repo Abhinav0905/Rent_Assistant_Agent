@@ -6,12 +6,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from twilio.rest import Client
 from twilio.request_validator import RequestValidator
 import os
+import json
 import logging
 from dotenv import load_dotenv
 from query_engine import query_agreement
 from query_detection import QueryDetection
 import uvicorn
 import time
+from datetime import datetime
+import requests
+from models import (
+    MaintenanceTicketRequest, 
+    MaintenanceTicketResponse,
+    MaintenanceTicketDB,
+    TicketCategory,
+    TicketPriority,
+    TicketStatus
+)
 
 # Setup logging
 logging.basicConfig(
@@ -139,84 +150,205 @@ async def debug():
     return {"status": "online", "time": time.time()}
 
 
+def split_long_message(message: str, limit: int = 1500) -> list:
+    """Split a long message into smaller chunks that fit Twilio's limit"""
+    if len(message) <= limit:
+        return [message]
+        
+    # Split on paragraph breaks first
+    parts = []
+    paragraphs = message.split('\n\n')
+    current_part = ""
+    
+    for paragraph in paragraphs:
+        if len(current_part) + len(paragraph) + 2 <= limit:
+            current_part += (paragraph + '\n\n')
+        else:
+            if current_part:
+                parts.append(current_part.strip())
+            current_part = paragraph + '\n\n'
+    
+    if current_part:
+        parts.append(current_part.strip())
+    
+    # Add part numbers if there are multiple parts
+    if len(parts) > 1:
+        parts = [f"Part {i+1}/{len(parts)}:\n{part}" for i, part in enumerate(parts)]
+    
+    return parts
+
+async def process_maintenance_request(message: str, from_number: str, media_urls: list, ticket_data: dict) -> str:
+    """Process a maintenance request and return the response message"""
+    try:
+        # Generate ticket ID
+        ticket_id = f"MAINT-{int(datetime.now().timestamp())}"
+        
+        # Extract location and symptoms from ticket_data
+        location = ticket_data.get("location", "Not specified")
+        symptoms = ticket_data.get("symptoms", message)
+        
+        # Format a detailed description
+        description = (
+            f"Location: {location}\n"
+            f"Reported Issue: {symptoms}"
+        )
+        
+        # Convert category and priority
+        try:
+            category = TicketCategory(ticket_data.get("category", "other").lower())
+            priority = TicketPriority(ticket_data.get("priority", "normal").lower())
+        except ValueError:
+            category = TicketCategory.OTHER
+            priority = TicketPriority.NORMAL
+        
+        # Create the ticket request
+        ticket_request = MaintenanceTicketRequest(
+            description=description,
+            tenant_phone=normalize_phone_number(from_number),
+            category=category,
+            priority=priority,
+            apartment_number=ticket_data.get("apartment_number"),
+            access_instructions=ticket_data.get("access_instructions"),
+            has_images=bool(media_urls)
+        )
+        
+        # Create database record
+        db_record = MaintenanceTicketDB(
+            **ticket_request.dict(),
+            ticket_id=ticket_id,
+            status=TicketStatus.NEW,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            image_paths=[]
+        )
+        
+        # Process images if any
+        if media_urls:
+            image_paths = []
+            os.makedirs("tickets/images", exist_ok=True)
+            
+            for i, url in enumerate(media_urls):
+                try:
+                    response = requests.get(url)
+                    if response.status_code == 200:
+                        image_filename = f"ticket_{ticket_id}_img_{i+1}.jpg"
+                        image_path = f"tickets/images/{image_filename}"
+                        
+                        with open(image_path, 'wb') as f:
+                            f.write(response.content)
+                        
+                        image_paths.append(image_path)
+                        logger.info(f"Saved image: {image_path}")
+                except Exception as e:
+                    logger.error(f"Error saving image: {e}")
+            
+            db_record.image_paths = image_paths
+        
+        # Save ticket to database
+        os.makedirs("tickets", exist_ok=True)
+        with open(f"tickets/{ticket_id}.json", "w") as f:
+            json.dump(db_record.dict(), f, indent=2, default=str)
+        
+        # Generate response message
+        priority_emoji = {
+            TicketPriority.EMERGENCY: "🚨",
+            TicketPriority.HIGH: "⚠️",
+            TicketPriority.NORMAL: "✅",
+            TicketPriority.LOW: "ℹ️"
+        }
+        
+        emoji = priority_emoji.get(priority, "✅")
+        
+        response_text = (
+            f"{emoji} Maintenance Ticket #{ticket_id}\n\n"
+            f"Your request has been received and assigned status: NEW\n\n"
+            f"Category: {category.name.capitalize()}\n"
+            f"Priority: {priority.name.capitalize()}\n\n"
+            f"Details:\n{description}\n\n"
+            f"Images Attached: {'Yes' if media_urls else 'No'}\n\n"
+            f"We'll review your request and provide updates.\n"
+            f"For status updates, text 'status #{ticket_id}'"
+        )
+        
+        return response_text
+        
+    except Exception as e:
+        logger.error(f"Error processing maintenance request: {e}", exc_info=True)
+        return "Sorry, there was an error processing your maintenance request. Please try again."
+
+
 @app.post("/")
 async def root_webhook(request: Request) -> PlainTextResponse:
-    """Handle webhooks at the root path - Twilio is sending requests here"""
+    """Handle webhooks at the root path"""
     try:
-        # Use previously stored form data if available
         form_data = getattr(request.state, "form_data", None) or await request.form()
         form_dict = dict(form_data)
         
-        # Extract message details with better error handling
-        message_body = form_dict.get("Body", "").strip() if "Body" in form_dict else ""
-        from_number = form_dict.get("From", "") if "From" in form_dict else ""
+        message_body = form_dict.get("Body", "").strip()
+        from_number = form_dict.get("From", "")
         
-        # Debug log the entire request to see what we're getting
-        logger.info(f"Webhook received with form data: {form_dict}")
+        logger.info(f"Processing message: '{message_body}' from {from_number}")
         
-        # Log the incoming message properly - make sure we're not truncating the from_number
-        logger.info(f"Received message from '{from_number}': {message_body[:50]}...")
+        # Extract media information
+        num_media = int(form_dict.get("NumMedia", "0"))
+        media_urls = []
+        for i in range(num_media):
+            if f"MediaUrl{i}" in form_dict:
+                media_urls.append(form_dict[f"MediaUrl{i}"])
         
-        # Note: Authorization check removed for testing
-        normalized_from = normalize_phone_number(from_number) if from_number else ""
-        logger.info(f"Normalized from: '{normalized_from}'")
-        logger.info("Proceeding without authorization check")
-            
-        # Process the query
-        try:
-            # Use the class method correctly
-            result = await QueryDetection.query(message_body)
-            
-            # Ensure we have a string response
-            if isinstance(result, str):
-                response_text = result
-            elif isinstance(result, dict):
-                if 'error' in result:
-                    logger.error(f"Query engine error: {result['error']}")
-                    response_text = "Sorry, I encountered an error while processing your query."
-                elif 'answer' in result:
-                    response_text = result['answer']
-                else:
-                    logger.error(f"Invalid response format: {result}")
-                    response_text = "Sorry, I couldn't process your query. Please try again."
+        normalized_from = normalize_phone_number(from_number)
+        
+        # Process the query and get response
+        query_result = await QueryDetection.query(message_body)
+        logger.info(f"Query result: {query_result}")
+        
+        # Handle maintenance requests
+        if isinstance(query_result, dict) and query_result.get("intent") == "maintenance":
+            response_text = await process_maintenance_request(
+                message=message_body,
+                from_number=normalized_from,
+                media_urls=media_urls,
+                ticket_data=query_result.get("ticket_data", {})
+            )
+        else:
+            # Handle regular queries
+            if isinstance(query_result, str):
+                response_text = query_result
+            elif isinstance(query_result, dict):
+                response_text = query_result.get('answer', str(query_result))
             else:
-                logger.error(f"Unexpected response type: {type(result)}")
-                response_text = "Sorry, I couldn't process your query. Please try again."
-            
-            logger.info(f"Response generated: {response_text[:100]}...")
-                
-        except Exception as e:
-            logger.error(f"Error processing query: {str(e)}", exc_info=True)  # Add full stack trace
-            response_text = "Sorry, I encountered an error while processing your request."
-            
-        # Make sure the phone number is valid - more robust check
-        if not from_number:
-            logger.error("From number is missing in the request")
-            return PlainTextResponse("Error: Missing recipient phone number", status_code=400)
-            
-        # Send WhatsApp response - make sure we have proper phone number format
-        whatsapp_to = from_number  # Should already have whatsapp: prefix from Twilio
+                if hasattr(query_result, 'content'):
+                    response_text = query_result.content
+                elif hasattr(query_result, 'response'):
+                    response_text = query_result.response
+                else:
+                    response_text = str(query_result)
+
+        logger.info(f"Final response text: {response_text}")
+        
+        # Split long messages
+        message_parts = split_long_message(response_text)
+        
+        # Format WhatsApp numbers
+        whatsapp_to = from_number if from_number.startswith("whatsapp:") else f"whatsapp:{from_number}"
         whatsapp_from = f"whatsapp:{twilio_phone_number}" if not twilio_phone_number.startswith("whatsapp:") else twilio_phone_number
         
-        # Log before sending
-        logger.info(f"Sending message to '{whatsapp_to}' from '{whatsapp_from}'")
+        # Send each part
+        last_message = None
+        for part in message_parts:
+            last_message = client.messages.create(
+                body=part,
+                from_=whatsapp_from,
+                to=whatsapp_to
+            )
+            logger.info(f"Message part sent with SID: {last_message.sid}")
         
-        # For additional debugging
-        if not whatsapp_to.startswith("whatsapp:"):
-            logger.warning(f"To number '{whatsapp_to}' does not have whatsapp: prefix, adding it")
-            whatsapp_to = f"whatsapp:{whatsapp_to}"
-            
-        message = client.messages.create(
-            body=response_text,
-            from_=whatsapp_from,
-            to=whatsapp_to
-        )
+        return PlainTextResponse(response_text)
         
-        logger.info(f"Message sent with SID: {message.body}")
-        return PlainTextResponse(message.body)
     except Exception as e:
-        logger.error(f"Root webhook error: {str(e)}", exc_info=True)  # Include full stack trace
-        return PlainTextResponse(f"Error: {str(e)}", status_code=500)
+        error_msg = f"Error processing request: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return PlainTextResponse(error_msg, status_code=500)
 
 
 if __name__ == "__main__":
